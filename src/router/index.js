@@ -3,7 +3,7 @@ import LoginView from '@/views/LoginView.vue'
 import RegisterAdminView from '@/views/RegisterAdminView.vue'
 import DashboardAdmin from '@/components/DashboardAdmin.vue'
 import MainView from '@/components/MainView.vue'
-import { isAuthenticated, isAdminRegistered } from '@/services/auth'
+import { isAuthenticated, isCurrentUserAdmin, hasAdmin } from '@/services/auth'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -34,14 +34,32 @@ const router = createRouter({
 })
 
 // Global navigation guard
-router.beforeEach((to) => {
-  // If no admin exists, only allow access to register (and home)
-  if (!isAdminRegistered() && to.path !== '/register' && to.path !== '/') {
-    return { path: '/register' }
+router.beforeEach(async (to) => {
+  // Short-circuit: if user already authenticated, do not block by admin-existence check
+  const authed = await isAuthenticated()
+
+  // If no admin exists yet and user is not authenticated, only allow register/home
+  if (!authed) {
+    const adminExists = await hasAdmin()
+    if (!adminExists && to.path !== '/register' && to.path !== '/' && to.path !== '/login') {
+      return { path: '/register' }
+    }
   }
+
   // Protect routes that require auth
-  if (to.meta?.requiresAuth && !isAuthenticated()) {
-    return { path: '/login' }
+  if (to.meta?.requiresAuth) {
+    if (!authed) return { path: '/login', query: { redirect: to.fullPath } }
+    // Only admins can access dashboard
+    if (to.path === '/dashboard') {
+      const isAdmin = await isCurrentUserAdmin()
+      if (!isAdmin) {
+        // If no admin exists yet, allow the first authenticated user through
+        const adminExistsNow = await hasAdmin()
+        if (adminExistsNow) {
+          return { path: '/' }
+        }
+      }
+    }
   }
   return true
 })

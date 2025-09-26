@@ -82,3 +82,48 @@ begin
 end$$;
 
 
+
+-- Auth helper RPCs (no public tables, only the auth.users table)
+-- Returns total number of users in the auth table
+create or replace function public.auth_user_count()
+returns bigint
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  cnt bigint;
+begin
+  select count(*) into cnt from auth.users;
+  return cnt;
+end;
+$$;
+
+-- Returns true if there is at least one user with user_metadata.role = 'admin'
+create or replace function public.has_admin()
+returns boolean
+language sql
+security definer
+set search_path = public, auth
+as $$
+  select exists (
+    select 1
+    from auth.users u
+    where coalesce(u.raw_user_meta_data->>'role', '') = 'admin'
+  );
+$$;
+
+-- Returns number of users with role = 'admin'
+create or replace function public.admin_count()
+returns bigint
+language sql
+security definer
+set search_path = public, auth
+as $$
+  select count(*)::bigint from auth.users u where coalesce(u.raw_user_meta_data->>'role','') = 'admin';
+$$;
+
+-- Allow anon/authenticated clients to execute these functions
+grant execute on function public.auth_user_count() to anon, authenticated;
+grant execute on function public.has_admin() to anon, authenticated;
+grant execute on function public.admin_count() to anon, authenticated;

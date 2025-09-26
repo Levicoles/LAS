@@ -1,11 +1,11 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { registerAdmin, isAdminRegistered } from '@/services/auth'
+import { registerWithEmail, hasAdmin, getCurrentSession, signOut } from '@/services/auth'
 
 const router = useRouter()
 
-const username = ref('')
+const email = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const showPassword = ref(false)
@@ -18,7 +18,7 @@ const passwordsMismatch = computed(() => confirmPassword.value.length > 0 && pas
 
 const canSubmit = computed(() => {
   return (
-    username.value.trim().length > 0 &&
+    email.value.trim().length > 0 &&
     password.value.length >= 8 &&
     password.value === confirmPassword.value &&
     !submitting.value
@@ -28,23 +28,29 @@ const canSubmit = computed(() => {
 const goToLogin = () => router.push('/login')
 
 const handleRegister = async () => {
-  if (isAdminRegistered()) {
-    router.push('/login')
-    return
-  }
   errorMessage.value = ''
   successMessage.value = ''
   submitting.value = true
   try {
-    await registerAdmin(username.value, password.value)
+    await registerWithEmail(email.value, password.value)
     successMessage.value = 'Account created successfully. Redirecting to dashboard...'
-    setTimeout(() => router.push('/dashboard'), 800)
+    const session = await getCurrentSession()
+    if (session) router.push('/dashboard')
   } catch (e) {
     errorMessage.value = e?.message || 'Failed to register admin'
   } finally {
     submitting.value = false
   }
 }
+
+onMounted(async () => {
+  // If a user is already logged in and they clicked "Create one",
+  // sign them out so they can register a new account instead of being redirected.
+  const session = await getCurrentSession()
+  if (session) {
+    await signOut()
+  }
+})
 </script>
 
 <template>
@@ -56,8 +62,8 @@ const handleRegister = async () => {
         </v-card-title>
         <v-card-text>
           <v-text-field
-            v-model="username"
-            label="Username"
+            v-model="email"
+            label="Email"
             variant="outlined"
             hide-details
             class="mb-4"

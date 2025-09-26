@@ -1,29 +1,26 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { login, isAdminRegistered } from '@/services/auth'
+import { ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { signInWithEmail } from '@/services/auth'
 
 const router = useRouter()
+const route = useRoute()
 
-const username = ref('')
+const email = ref('')
 const password = ref('')
 const errorMessage = ref('')
 
 const handleLogin = async () => {
   errorMessage.value = ''
   try {
-    await login(username.value, password.value)
-    router.push('/dashboard')
+    await signInWithEmail(email.value, password.value)
+    const redirectTo = String(route.query.redirect || '/dashboard')
+    router.push(redirectTo)
   } catch (e) {
-    errorMessage.value = e?.message || '❌ Invalid username or password.'
+    errorMessage.value = e?.message || '❌ Invalid email or password.'
   }
 }
 
-onMounted(() => {
-  if (!isAdminRegistered()) {
-    router.replace('/register')
-  }
-})
 </script>
 
 <template>
@@ -39,10 +36,10 @@ onMounted(() => {
         </v-card-title>
 
         <v-card-text>
-          <!-- Username -->
+          <!-- Email -->
           <v-text-field
-            v-model="username"
-            label="Username"
+            v-model="email"
+            label="Email"
             variant="outlined"
             hide-details
             class="mb-4"
@@ -80,8 +77,8 @@ onMounted(() => {
             Login
           </v-btn>
 
-          <div class="text-caption mt-4 text-center" v-if="!isAdminRegistered()">
-            No admin account yet?
+          <div class="text-caption mt-4 text-center">
+            No account yet?
             <v-btn variant="text" color="primary" @click="router.push('/register')">Create one</v-btn>
           </div>
         </v-card-text>
