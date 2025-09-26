@@ -31,6 +31,9 @@ const handleLogin = async () => {
       
       <!-- Login Card -->
       <v-card class="pa-6" width="400" elevation="6" rounded="xl">
+        <div class="d-flex align-center mb-2">
+          <v-btn icon="mdi-arrow-left" variant="text" @click="router.push('/')" />
+        </div>
         <v-card-title class="text-center text-h5 font-weight-bold text-blue-600">
           Admin Login
         </v-card-title>
