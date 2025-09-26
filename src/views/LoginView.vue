@@ -1,20 +1,29 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { login, isAdminRegistered } from '@/services/auth'
+
+const router = useRouter()
 
 const username = ref('')
 const password = ref('')
 const errorMessage = ref('')
 
-const handleLogin = () => {
-  if (username.value === 'admin' && password.value === 'admin123') {
-    errorMessage.value = ''
-    alert('✅ Login successful! Welcome Admin.')
-    // Example redirect (if you are using vue-router)
-    // router.push('/dashboard')
-  } else {
-    errorMessage.value = '❌ Invalid username or password.'
+const handleLogin = async () => {
+  errorMessage.value = ''
+  try {
+    await login(username.value, password.value)
+    router.push('/dashboard')
+  } catch (e) {
+    errorMessage.value = e?.message || '❌ Invalid username or password.'
   }
 }
+
+onMounted(() => {
+  if (!isAdminRegistered()) {
+    router.replace('/register')
+  }
+})
 </script>
 
 <template>
@@ -63,13 +72,18 @@ const handleLogin = () => {
           <!-- Login Button -->
           <v-btn
             block
-            color="blue"
+            color="green"
             size="large"
             class="mt-2 text-white"
             @click="handleLogin"
           >
             Login
           </v-btn>
+
+          <div class="text-caption mt-4 text-center" v-if="!isAdminRegistered()">
+            No admin account yet?
+            <v-btn variant="text" color="primary" @click="router.push('/register')">Create one</v-btn>
+          </div>
         </v-card-text>
       </v-card>
     </div>
@@ -82,3 +96,4 @@ html, body, #app {
   margin: 0;
 }
 </style>
+
