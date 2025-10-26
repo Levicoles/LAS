@@ -8,6 +8,8 @@ create table if not exists public.books (
   shelf integer not null check (shelf > 0),
   available boolean not null default true,
   isbn text null,
+  photo_url text null,
+  description text null,
   created_at timestamptz not null default now()
 );
 
@@ -127,3 +129,36 @@ $$;
 grant execute on function public.auth_user_count() to anon, authenticated;
 grant execute on function public.has_admin() to anon, authenticated;
 grant execute on function public.admin_count() to anon, authenticated;
+
+-- Storage bucket for book photos
+-- Note: This needs to be run in Supabase dashboard or via CLI as it requires storage_admin role
+-- Bucket name: book-photos
+-- Public: true
+-- Allowed MIME types: image/jpeg, image/png, image/gif, image/webp
+-- File size limit: 5242880 (5MB)
+-- 
+-- Run this SQL in Supabase SQL editor or via CLI:
+/*
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'book-photos',
+  'book-photos',
+  true,
+  5242880,
+  ARRAY['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- Storage policies for book-photos bucket
+CREATE POLICY "Public Access"
+ON storage.objects FOR SELECT
+USING (bucket_id = 'book-photos');
+
+CREATE POLICY "Authenticated users can upload"
+ON storage.objects FOR INSERT
+WITH CHECK (bucket_id = 'book-photos' AND auth.role() = 'authenticated');
+
+CREATE POLICY "Authenticated users can delete"
+ON storage.objects FOR DELETE
+USING (bucket_id = 'book-photos' AND auth.role() = 'authenticated');
+*/

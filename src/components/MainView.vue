@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getStudentByLrn } from '@/services/students'
-import { checkInByStudentId, checkOutLatestByStudentId } from '@/services/attendance'
+import { checkInByStudentId, checkOutLatestByStudentId, getOpenAttendanceForStudent, renewSessionByStudentId } from '@/services/attendance'
 import { searchBooks as searchBooksApi } from '@/services/books'
 
 const router = useRouter()
@@ -13,9 +13,20 @@ const pinError = ref('')
 const isSubmitting = ref(false)
 const isPinValid = computed(() => /^\d{4}$/.test(pin.value))
 
+// Snackbar for user messages
+const showMsg = ref(false)
+const msgText = ref('')
+const msgColor = ref('info')
+const showMessage = (text, color = 'info', duration = 3000) => {
+	msgText.value = text
+	msgColor.value = color
+	showMsg.value = true
+}
+
 // In/Out history (from Supabase attendance), retained locally for 24h
 const history = ref([])
 const HISTORY_STORAGE_KEY = 'mainview_history'
+const BOOKS_BY_ATTENDANCE_KEY = 'books_by_attendance'
 
 const pruneAndPersistHistory = () => {
 	const now = Date.now()
@@ -39,11 +50,31 @@ const loadHistoryFromStorage = () => {
 	pruneAndPersistHistory()
 }
 
+// Persisted mapping of attendance checkout to books read (no DB change)
+const getBooksByAttendance = () => {
+  try {
+    const raw = localStorage.getItem(BOOKS_BY_ATTENDANCE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+const setBooksByAttendance = (map) => {
+  try {
+    localStorage.setItem(BOOKS_BY_ATTENDANCE_KEY, JSON.stringify(map || {}))
+  } catch (_) {}
+}
+
 // Books (from Supabase)
 const allBooks = ref([])
 
 const searchText = ref('')
 const isSearching = ref(false)
+
+// View More dialog state
+const showViewMoreDialog = ref(false)
+const selectedBook = ref(null)
 
 const filteredBooks = computed(() => {
 	const q = searchText.value.trim()
@@ -70,13 +101,44 @@ const submitInOut = async (action) => {
 	try {
 		const student = await getStudentByLrn(pin.value)
 		if (!student) throw new Error('Student not found')
-		if (action === 'In') {
-			await checkInByStudentId(student.id)
-		} else {
-			await checkOutLatestByStudentId(student.id)
+
+		// Determine current open session
+		const open = await getOpenAttendanceForStudent(student.id)
+
+    if (action === 'In') {
+			if (open) {
+				// Already logged in → prevent duplicate unless user confirms renew
+				showMessage('Student is already logged in', 'warning')
+				const proceed = window.confirm('Student is already logged in. Log in again to renew the session?')
+				if (!proceed) return
+				await renewSessionByStudentId(student.id)
+			} else {
+				await checkInByStudentId(student.id)
+			}
+    } else {
+			// action === 'Out'
+			if (!open) {
+				showMessage('Student is already logged out', 'warning')
+				return
+			}
+      // Before checking out, ask for books read during the visit
+      const booksInput = window.prompt('Enter the books you read this visit (comma-separated titles). You can leave blank if none:', '')
+      const normalized = (booksInput || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.length > 0)
+
+      const checkoutRow = await checkOutLatestByStudentId(student.id)
+
+      // Save mapping: attendance.id -> array of book titles
+      if (checkoutRow && checkoutRow.id) {
+        const map = getBooksByAttendance()
+        map[String(checkoutRow.id)] = normalized
+        setBooksByAttendance(map)
+      }
 		}
 		const ts = Date.now()
-		history.value.unshift({
+    history.value.unshift({
 			id: Date.now(),
 			name: student.name,
 			grade: `${student.year_level} - ${student.section}`,
@@ -106,6 +168,16 @@ const searchBooks = async () => {
  	}
 }
 
+const viewMoreBook = (book) => {
+	selectedBook.value = book
+	showViewMoreDialog.value = true
+}
+
+const closeViewMoreDialog = () => {
+	showViewMoreDialog.value = false
+	selectedBook.value = null
+}
+
 onMounted(async () => {
 	// Do not load all books initially; wait for a search
 	allBooks.value = []
@@ -114,8 +186,8 @@ onMounted(async () => {
 </script>
 
 <template>
-	<v-app>
-        <v-app-bar elevation="0" class="modern-appbar">
+	<v-app class="overflow-hidden">
+        <v-app-bar elevation="0" class="modern-appbar" >
           <v-container class="py-4">
             <div class="d-flex align-center">
               <div class="flex-grow-1 text-center">
@@ -210,11 +282,20 @@ onMounted(async () => {
 									<div class="mb-2">
 										<v-chip color="primary" variant="tonal" prepend-icon="mdi-bookshelf">Shelf: {{ b.shelf }}</v-chip>
 									</div>
-									<div>
+									<div class="mb-3">
 										<v-chip :color="b.available ? 'green' : 'red'" class="text-white" prepend-icon="mdi-check-circle">
 											{{ b.available ? 'Available' : 'Unavailable' }}
 										</v-chip>
 									</div>
+									<v-btn 
+										color="primary" 
+										variant="elevated" 
+										block 
+										prepend-icon="mdi-eye"
+										@click="viewMoreBook(b)"
+									>
+										View More
+									</v-btn>
 								</v-card>
 							</v-col>
 						</v-row>
@@ -253,17 +334,91 @@ onMounted(async () => {
 				</v-row>
 			</v-container>
 		</v-main>
+	<v-snackbar v-model="showMsg" :color="msgColor" timeout="3000" variant="elevated" location="bottom right">
+		{{ msgText }}
+	</v-snackbar>
+	
+	<!-- View More Dialog -->
+	<v-dialog v-model="showViewMoreDialog" max-width="800" scrollable>
+		<v-card v-if="selectedBook">
+			<v-card-title class="text-h5 font-weight-bold pa-6 pb-4">
+				{{ selectedBook.title }}
+			</v-card-title>
+			<v-card-text class="pa-6">
+				<v-row>
+					<!-- Book Image -->
+					<v-col cols="12" md="5" class="text-center">
+						<div v-if="selectedBook.photo_url" style="border-radius: 12px; overflow: hidden;">
+							<v-img
+								:src="selectedBook.photo_url"
+								contain
+								style="max-height: 400px; width: 100%;"
+							></v-img>
+						</div>
+						<div v-else class="pa-8" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px;">
+							<v-icon size="128" color="white">mdi-book-open-page-variant</v-icon>
+						</div>
+					</v-col>
+					
+					<!-- Book Details -->
+					<v-col cols="12" md="7">
+						<div class="mb-4">
+							<v-icon class="mr-2" color="primary">mdi-account</v-icon>
+							<span class="text-h6">{{ selectedBook.author }}</span>
+						</div>
+						
+						<div class="mb-4">
+							<v-icon class="mr-2" color="primary">mdi-bookshelf</v-icon>
+							<span class="text-body-1 font-weight-medium">Shelf {{ selectedBook.shelf }}</span>
+						</div>
+						
+						<div class="mb-4">
+							<v-icon class="mr-2" :color="selectedBook.available ? 'green' : 'red'">mdi-check-circle</v-icon>
+							<v-chip :color="selectedBook.available ? 'green' : 'red'" class="text-white">
+								{{ selectedBook.available ? 'Available' : 'Unavailable' }}
+							</v-chip>
+						</div>
+						
+						<div v-if="selectedBook.isbn" class="mb-4">
+							<v-icon class="mr-2" color="primary">mdi-barcode</v-icon>
+							<span class="text-body-2">ISBN: {{ selectedBook.isbn }}</span>
+						</div>
+						
+						<v-divider class="my-4"></v-divider>
+						
+						<div v-if="selectedBook.description">
+							<h3 class="text-subtitle-1 font-weight-bold mb-2">
+								<v-icon size="small" class="mr-1">mdi-text-box-outline</v-icon>
+								Description
+							</h3>
+							<p class="text-body-1" style="white-space: pre-wrap;">{{ selectedBook.description }}</p>
+						</div>
+						<div v-else class="text-center py-8 text-grey">
+							<v-icon size="48" class="mb-2">mdi-text-box-remove-outline</v-icon>
+							<p>No description available for this book</p>
+						</div>
+					</v-col>
+				</v-row>
+			</v-card-text>
+			<v-card-actions class="pa-6 pt-0">
+				<v-spacer></v-spacer>
+				<v-btn color="primary" variant="elevated" @click="closeViewMoreDialog">
+					Close
+				</v-btn>
+			</v-card-actions>
+		</v-card>
+	</v-dialog>
 	</v-app>
 </template>
 
 <style scoped>
 .modern-appbar {
-  background: linear-gradient(90deg, #00bcd4, #26a69a);
+  background: #0B4F18;
 }
 .modern-bg {
   background: radial-gradient(1200px 400px at 50% -10%, rgba(38, 166, 154, 0.15), transparent),
               radial-gradient(900px 300px at 0% 0%, rgba(0, 188, 212, 0.12), transparent),
-              #f5f7fb;
+              #D9D9D9;
 }
 .book-card-elev:hover {
   transform: translateY(-2px);

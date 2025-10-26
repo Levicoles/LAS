@@ -93,7 +93,7 @@ onMounted(async () => {
           <v-alert v-if="errorMessage" type="error" variant="tonal" border="start" class="mb-3">{{ errorMessage }}</v-alert>
           <v-alert v-if="successMessage" type="success" variant="tonal" border="start" class="mb-3">{{ successMessage }}</v-alert>
 
-          <v-btn :disabled="!canSubmit" block color="primary" size="large" class="mt-2 text-white" @click="handleRegister">
+          <v-btn :disabled="!canSubmit" block color="green" size="large" class="mt-2 text-white" @click="handleRegister">
             {{ submitting ? 'Creating...' : 'Create Account' }}
           </v-btn>
 

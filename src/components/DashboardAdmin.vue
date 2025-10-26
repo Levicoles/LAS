@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchBooks, createBook, deleteBookById, toggleAvailability } from '@/services/books'
+import { fetchBooks, createBook, deleteBookById, toggleAvailability, uploadBookPhoto, deleteBookPhoto, updateBookPhoto } from '@/services/books'
 import { fetchStudents, createStudent, deleteStudentById } from '@/services/students'
 import { fetchRecentActivity, fetchReportsSummary, formatDuration } from '@/services/attendance'
 import jsPDF from 'jspdf'
@@ -19,6 +19,7 @@ const totalVisits = ref(0)
 const activeUsers = ref(0)
 const avgStayTime = ref('0m 00s')
 const recentActivity = ref([])
+const booksByAttendance = ref({})
 
 // Book Management Data - populated from Supabase
 const totalBooks = ref(0)
@@ -35,7 +36,17 @@ const newBook = ref({
   author: '',
   shelf: 1,
   available: true,
+  photo: null,
+  description: '',
 })
+
+// Photo upload and preview state
+const photoPreview = ref(null)
+const photoFile = ref(null)
+
+// Photo viewer dialog
+const showPhotoViewer = ref(false)
+const viewingPhoto = ref(null)
 
 // Delete Book dialog state
 const deleteDialog = ref(false)
@@ -47,6 +58,7 @@ const positiveInt = v => (Number.isInteger(Number(v)) && Number(v) > 0) || 'Must
 
 // Students state
 const students = ref([])
+const studentSearch = ref('')
 const studentFormValid = ref(false)
 const newStudent = ref({
   lrn: '',
@@ -151,13 +163,40 @@ const addBook = async () => {
     const shelfNumber = Number(newBook.value.shelf)
     if (!Number.isInteger(shelfNumber) || shelfNumber <= 0) return
 
-    const created = await createBook({
-      title: newBook.value.title.trim(),
-      author: newBook.value.author.trim(),
-      shelf: shelfNumber,
-      available: !!newBook.value.available,
-    })
-    books.value.push(created)
+    let photoUrl = null
+    
+    // Upload photo if provided
+    if (photoFile.value) {
+      // Create a temporary book ID for photo upload
+      const tempBook = await createBook({
+        title: newBook.value.title.trim(),
+        author: newBook.value.author.trim(),
+        shelf: shelfNumber,
+        available: !!newBook.value.available,
+        description: newBook.value.description?.trim() || null,
+      })
+      
+      try {
+        photoUrl = await uploadBookPhoto(photoFile.value, tempBook.id)
+        // Update the book with the photo URL
+        const updated = await updateBookPhoto(tempBook.id, photoUrl)
+        books.value.push(updated)
+      } catch (photoError) {
+        console.error('Error uploading photo:', photoError)
+        // Delete the book if photo upload failed
+        await deleteBookById(tempBook.id)
+        books.value.push(tempBook)
+      }
+    } else {
+      const created = await createBook({
+        title: newBook.value.title.trim(),
+        author: newBook.value.author.trim(),
+        shelf: shelfNumber,
+        available: !!newBook.value.available,
+        description: newBook.value.description?.trim() || null,
+      })
+      books.value.push(created)
+    }
 
     // Update counters
     totalBooks.value = books.value.length
@@ -167,7 +206,9 @@ const addBook = async () => {
     }
 
     // Reset form and close dialog
-    newBook.value = { title: '', author: '', shelf: 1, available: true }
+    newBook.value = { title: '', author: '', shelf: 1, available: true, photo: null, description: '' }
+    photoPreview.value = null
+    photoFile.value = null
     addDialog.value = false
   } catch (error) {
     console.error('Error adding book:', error)
@@ -186,6 +227,13 @@ const deleteBook = async () => {
     if (!bookPendingDelete.value) return
     loading.value = true
     const id = bookPendingDelete.value.id
+    const photoUrl = bookPendingDelete.value.photo_url
+    
+    // Delete photo from storage if exists
+    if (photoUrl) {
+      await deleteBookPhoto(photoUrl)
+    }
+    
     await deleteBookById(id)
     books.value = books.value.filter(b => b.id !== id)
     totalBooks.value = books.value.length
@@ -197,6 +245,45 @@ const deleteBook = async () => {
     console.error('Error deleting book:', error)
   } finally {
     loading.value = false
+  }
+}
+
+// Photo handling functions
+const handlePhotoUpload = (event) => {
+  const file = event.target.files?.[0]
+  if (file) {
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload an image file')
+      return
+    }
+    
+    // Validate file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Image size should be less than 5MB')
+      return
+    }
+    
+    photoFile.value = file
+    
+    // Create preview
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      photoPreview.value = e.target.result
+    }
+    reader.readAsDataURL(file)
+  }
+}
+
+const removePhoto = () => {
+  photoPreview.value = null
+  photoFile.value = null
+}
+
+const viewPhoto = (book) => {
+  if (book.photo_url) {
+    viewingPhoto.value = book
+    showPhotoViewer.value = true
   }
 }
 
@@ -241,22 +328,72 @@ const exportToPDF = () => {
     })
 
     // Recent Activity table
-    const activityRows = (recentActivity.value || []).map(a => [
-      a.user || '',
-      a.action || '',
-      a.time || '',
-      a.duration || '',
-    ])
+    const activityRows = (recentActivity.value || []).map(a => {
+      const attendanceId = typeof a.id === 'string' && a.id.includes('-') ? a.id.split('-')[0] : ''
+      const books = Array.isArray(booksByAttendance.value[attendanceId]) ? booksByAttendance.value[attendanceId].join(', ') : ''
+      return [
+        a.user || '',
+        a.action || '',
+        a.time || '',
+        typeof a.duration === 'string' ? a.duration : (a.duration || ''),
+        books
+      ]
+    })
     const nextY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 24 : metricsY + 80
     doc.setFont('helvetica', 'bold')
     doc.text('Recent Activity (today)', marginX, nextY)
     doc.setFont('helvetica', 'normal')
     autoTable(doc, {
       startY: nextY + 8,
-      head: [['User', 'Action', 'Time', 'Duration']],
+      head: [['User', 'Action', 'Time', 'Duration', 'Books Read']],
       body: activityRows,
       styles: { fontSize: 9 },
       headStyles: { fillColor: [33, 150, 243] },
+      theme: 'striped',
+      margin: { left: marginX, right: marginX },
+    })
+
+    // Detailed Visit History (Logins / Logouts)
+    const startY2 = doc.lastAutoTable ? doc.lastAutoTable.finalY + 28 : (nextY + 120)
+    doc.setFont('helvetica', 'bold')
+    doc.text('Detailed Visit History', marginX, startY2)
+
+    // Logins table
+    const loginRows = (visitRowsIn.value || []).map(r => [r.user, r.timeText || '', r.durationText || '', (r.books || []).join(', ')])
+    autoTable(doc, {
+      startY: startY2 + 8,
+      head: [['Logins']],
+      body: [],
+      theme: 'plain',
+      styles: { fontSize: 11 },
+      margin: { left: marginX, right: marginX },
+    })
+    autoTable(doc, {
+      startY: doc.lastAutoTable ? doc.lastAutoTable.finalY + 4 : startY2 + 24,
+      head: [['User', 'Time', 'Duration', 'Books Read']],
+      body: loginRows,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [76, 175, 80] },
+      theme: 'striped',
+      margin: { left: marginX, right: marginX },
+    })
+
+    // Logouts table
+    const logoutRows = (visitRowsOut.value || []).map(r => [r.user, r.timeText || '', r.durationText || '', (r.books || []).join(', ')])
+    autoTable(doc, {
+      startY: doc.lastAutoTable ? doc.lastAutoTable.finalY + 16 : undefined,
+      head: [['Logouts']],
+      body: [],
+      theme: 'plain',
+      styles: { fontSize: 11 },
+      margin: { left: marginX, right: marginX },
+    })
+    autoTable(doc, {
+      startY: doc.lastAutoTable ? doc.lastAutoTable.finalY + 4 : undefined,
+      head: [['User', 'Time', 'Duration', 'Books Read']],
+      body: logoutRows,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [244, 67, 54] },
       theme: 'striped',
       margin: { left: marginX, right: marginX },
     })
@@ -286,11 +423,30 @@ const exportToExcel = () => {
 
     // Recent Activity sheet
     const activityData = [
-      ['User', 'Action', 'Time', 'Duration'],
-      ...(recentActivity.value || []).map(a => [a.user || '', a.action || '', a.time || '', a.duration || '']),
+      ['User', 'Action', 'Time', 'Duration', 'Books Read'],
+      ...(recentActivity.value || []).map(a => {
+        const attendanceId = typeof a.id === 'string' && a.id.includes('-') ? a.id.split('-')[0] : ''
+        const books = Array.isArray(booksByAttendance.value[attendanceId]) ? booksByAttendance.value[attendanceId].join(', ') : ''
+        return [a.user || '', a.action || '', a.time || '', a.duration || '', books]
+      }),
     ]
     const wsActivity = XLSX.utils.aoa_to_sheet(activityData)
     XLSX.utils.book_append_sheet(wb, wsActivity, 'Recent Activity')
+
+    // Detailed Visit History sheets
+    const loginSheet = [
+      ['User', 'Time', 'Duration', 'Books Read'],
+      ...(visitRowsIn.value || []).map(r => [r.user, r.timeText || '', r.durationText || '', (r.books || []).join(', ')])
+    ]
+    const wsLogins = XLSX.utils.aoa_to_sheet(loginSheet)
+    XLSX.utils.book_append_sheet(wb, wsLogins, 'Logins')
+
+    const logoutSheet = [
+      ['User', 'Time', 'Duration', 'Books Read'],
+      ...(visitRowsOut.value || []).map(r => [r.user, r.timeText || '', r.durationText || '', (r.books || []).join(', ')])
+    ]
+    const wsLogouts = XLSX.utils.aoa_to_sheet(logoutSheet)
+    XLSX.utils.book_append_sheet(wb, wsLogouts, 'Logouts')
 
     const arrayBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
     const blob = new Blob([arrayBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
@@ -319,8 +475,17 @@ const loadLibraryData = async () => {
     avgStayTime.value = formatDuration(summary.avgStaySeconds || 0)
     recentActivity.value = activity.map(a => ({
       ...a,
-      duration: a.duration ? formatDuration(Math.floor((new Date(a.duration).getTime()) / 1000)) : null,
+      // 'duration' from service is in seconds for 'out' events; keep as pretty text here
+      duration: typeof a.duration === 'number' ? formatDuration(a.duration) : a.duration,
     }))
+
+    // Load local mapping of books read keyed by attendance id
+    try {
+      const raw = localStorage.getItem('books_by_attendance')
+      booksByAttendance.value = raw ? JSON.parse(raw) : {}
+    } catch (_) {
+      booksByAttendance.value = {}
+    }
   } catch (error) {
     console.error('Error loading library data:', error)
   } finally {
@@ -361,6 +526,52 @@ onMounted(() => {
   loadBooksData()
   loadStudentsData()
 })
+
+const filteredStudents = computed(() => {
+  const q = String(studentSearch.value || '').trim().toLowerCase()
+  if (!q) return students.value
+  return (students.value || []).filter(s => {
+    const lrn = String(s.lrn || '').toLowerCase()
+    const name = String(s.name || '').toLowerCase()
+    const yl = String(s.year_level || '').toLowerCase()
+    const sec = String(s.section || '').toLowerCase()
+    return lrn.includes(q) || name.includes(q) || yl.includes(q) || sec.includes(q)
+  })
+})
+
+// Compact summary (top 2 activities) and table-friendly rows
+const recentActivityCompact = computed(() => {
+  return (recentActivity.value || []).slice(0, 2).map(a => {
+    const isIn = a.type === 'in'
+    const timeText = a.time ? new Date(a.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : ''
+    return {
+      user: a.user || '',
+      actionText: isIn ? 'In' : 'Out',
+      color: isIn ? 'green' : 'red',
+      timeText,
+      durationText: isIn ? (a.duration || 'Active') : (a.duration || '')
+    }
+  })
+})
+
+const visitRows = computed(() => {
+  return (recentActivity.value || []).map(a => {
+    const isIn = a.type === 'in'
+    // Extract attendance id from event id pattern `${attendanceId}-in|out`
+    const attendanceId = typeof a.id === 'string' && a.id.includes('-') ? a.id.split('-')[0] : ''
+    const books = Array.isArray(booksByAttendance.value[attendanceId]) ? booksByAttendance.value[attendanceId] : []
+    return {
+      user: a.user || '',
+      action: isIn ? 'In' : 'Out',
+      timeText: a.time ? new Date(a.time).toLocaleString() : '',
+      durationText: isIn ? (a.duration || 'Active') : (a.duration || ''),
+      books
+    }
+  })
+})
+
+const visitRowsIn = computed(() => visitRows.value.filter(r => r.action === 'In'))
+const visitRowsOut = computed(() => visitRows.value.filter(r => r.action === 'Out'))
 </script>
 
 <template>
@@ -496,52 +707,91 @@ onMounted(() => {
           <!-- Recent Activity -->
           <v-row>
             <v-col>
-              <v-card elevation="3">
-                <v-card-title class="text-h5 font-weight-bold text-primary pa-6 pb-2">
+              <!-- Compact Recent Activity Card (top 2) -->
+              <v-card elevation="3" class="recent-activity-card">
+                <v-card-title class="text-h6 font-weight-bold text-primary pa-4 pb-2">
                   <v-icon left color="primary">mdi-history</v-icon>
                   Recent Activity
                 </v-card-title>
+                <v-card-text class="pa-4">
+                  <div v-if="!loading && recentActivityCompact.length">
+                    <div v-for="(a, i) in recentActivityCompact" :key="i" class="mb-2">
+                      <span :class="a.color === 'green' ? 'text-green' : 'text-red'" class="font-weight-medium">{{ a.user }}</span>
+                      <span class="ml-1" :class="a.color === 'green' ? 'text-green' : 'text-red'">- {{ a.actionText }}</span>
+                      <span class="ml-1">at {{ a.timeText }}</span>
+                      <span v-if="a.durationText" class="ml-1 text-green">(Duration: {{ a.durationText }})</span>
+                    </div>
+                  </div>
+                  <div v-else-if="loading" class="text-center">
+                    <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+                  </div>
+                  <div v-else class="text-grey">No activity yet</div>
+                </v-card-text>
+              </v-card>
+
+              <!-- Detailed Visit History Table -->
+              <v-card class="mt-4 visit-history-card" elevation="3">
+                <v-card-title class="text-h6 font-weight-bold text-primary pa-4 pb-2">
+                  <v-icon left color="primary">mdi-text-box-outline</v-icon>
+                  Detailed Visit History
+                </v-card-title>
                 <v-card-text class="pa-0">
-                  <v-list v-if="!loading && recentActivity.length > 0" class="pa-0">
-                    <v-list-item 
-                      v-for="(activity, index) in recentActivity" 
-                      :key="index"
-                      class="px-6 py-3"
-                      :class="{ 'bg-grey-lighten-5': index % 2 === 0 }"
-                    >
-                      <template v-slot:prepend>
-                        <v-avatar 
-                          :color="activity.type === 'in' ? 'green' : 'red'" 
-                          size="40"
-                          class="mr-4"
-                        >
-                          <v-icon color="white">
-                            {{ activity.type === 'in' ? 'mdi-login' : 'mdi-logout' }}
-                          </v-icon>
-                        </v-avatar>
-                      </template>
-                      <v-list-item-title class="text-h6">
-                        <span :class="activity.type === 'in' ? 'text-green' : 'text-red'">
-                          {{ activity.user }}
-                        </span>
-                        <span class="text-grey-darken-1 ml-2">
-                          {{ activity.action }} at {{ activity.time }}
-                          <span v-if="activity.duration" class="text-caption">
-                            (Duration: {{ activity.duration }})
-                          </span>
-                        </span>
-                      </v-list-item-title>
-                    </v-list-item>
-                  </v-list>
-                  <div v-else-if="loading" class="pa-8 text-center">
-                    <v-progress-circular indeterminate color="primary" size="48"></v-progress-circular>
-                    <p class="mt-4 text-h6 text-grey-darken-1">Loading recent activity...</p>
+                  <div v-if="!loading && (visitRowsIn.length || visitRowsOut.length)">
+                    <v-row>
+                      <v-col cols="12" md="6">
+                        <h4 class="text-subtitle-1 font-weight-bold pa-4 pb-2">Logins</h4>
+                        <v-table density="comfortable">
+                          <thead>
+                            <tr>
+                              <th class="text-left">User</th>
+                              <th class="text-left">Time</th>
+                              <th class="text-left">Duration</th>
+                              <th class="text-left">Books Read</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="(r, i) in visitRowsIn" :key="`in-${i}`">
+                              <td>{{ r.user }}</td>
+                              <td>{{ r.timeText }}</td>
+                              <td>{{ r.durationText }}</td>
+                              <td>
+                                <span v-if="r.books && r.books.length">{{ r.books.join(', ') }}</span>
+                                <span v-else class="text-grey">—</span>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </v-table>
+                      </v-col>
+                      <v-col cols="12" md="6">
+                        <h4 class="text-subtitle-1 font-weight-bold pa-4 pb-2">Logouts</h4>
+                        <v-table density="comfortable">
+                          <thead>
+                            <tr>
+                              <th class="text-left">User</th>
+                              <th class="text-left">Time</th>
+                              <th class="text-left">Duration</th>
+                              <th class="text-left">Books Read</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="(r, i) in visitRowsOut" :key="`out-${i}`">
+                              <td>{{ r.user }}</td>
+                              <td>{{ r.timeText }}</td>
+                              <td>{{ r.durationText }}</td>
+                              <td>
+                                <span v-if="r.books && r.books.length">{{ r.books.join(', ') }}</span>
+                                <span v-else class="text-grey">—</span>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </v-table>
+                      </v-col>
+                    </v-row>
                   </div>
-                  <div v-else class="pa-8 text-center">
-                    <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-inbox-outline</v-icon>
-                    <p class="text-h6 text-grey-darken-1">No recent activity found</p>
-                    <p class="text-body-2 text-grey">Activity will appear here once users start using the library</p>
+                  <div v-else-if="loading" class="pa-6 text-center">
+                    <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
                   </div>
+                  <div v-else class="pa-6 text-center text-grey">No visit history</div>
                 </v-card-text>
               </v-card>
             </v-col>
@@ -623,6 +873,46 @@ onMounted(() => {
                     min="1"
                     required
                   />
+                  
+                  <v-textarea
+                    label="Description (Optional)"
+                    v-model="newBook.description"
+                    prepend-icon="mdi-text-box-outline"
+                    variant="outlined"
+                    density="comfortable"
+                    rows="3"
+                    hint="Add a brief description about the book"
+                    persistent-hint
+                  />
+                  
+                  <!-- Photo Upload -->
+                  <v-file-input
+                    label="Book Photo (Optional)"
+                    prepend-icon="mdi-camera"
+                    accept="image/*"
+                    variant="outlined"
+                    density="comfortable"
+                    @change="handlePhotoUpload"
+                    show-size
+                  />
+                  
+                  <!-- Photo Preview -->
+                  <div v-if="photoPreview" class="mt-2">
+                    <v-img
+                      :src="photoPreview"
+                      max-height="150"
+                      contain
+                      class="mb-2"
+                    ></v-img>
+                    <v-btn
+                      size="small"
+                      color="error"
+                      @click="removePhoto"
+                    >
+                      Remove Photo
+                    </v-btn>
+                  </div>
+                  
                   <v-switch
                     v-model="newBook.available"
                     color="success"
@@ -638,6 +928,32 @@ onMounted(() => {
                 <v-btn variant="text" @click="addDialog = false">Cancel</v-btn>
                 <v-btn color="primary" :disabled="!addFormValid || loading" :loading="loading" @click="addBook" variant="elevated">
                   Save
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+          
+          <!-- Photo Viewer Dialog -->
+          <v-dialog v-model="showPhotoViewer" max-width="800">
+            <v-card v-if="viewingPhoto">
+              <v-card-title class="text-h6 font-weight-bold">
+                {{ viewingPhoto.title }}
+              </v-card-title>
+              <v-card-text class="text-center">
+                <img
+                  v-if="viewingPhoto.photo_url"
+                  :src="viewingPhoto.photo_url"
+                  alt="Book Photo"
+                  style="max-width: 100%; max-height: 600px; object-fit: contain;"
+                />
+                <p class="text-subtitle-1 mt-4">
+                  by {{ viewingPhoto.author }}
+                </p>
+              </v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn color="primary" @click="showPhotoViewer = false" variant="elevated">
+                  Close
                 </v-btn>
               </v-card-actions>
             </v-card>
@@ -735,6 +1051,20 @@ onMounted(() => {
                             elevation="1"
                             :color="book.available ? 'green-lighten-5' : 'red-lighten-5'"
                           >
+                            <!-- Book Photo Thumbnail -->
+                            <div v-if="book.photo_url" class="mb-2 text-center" @click="viewPhoto(book)" style="cursor: pointer;">
+                              <v-img
+                                :src="book.photo_url"
+                                max-height="120"
+                                cover
+                                style="border-radius: 8px;"
+                              >
+                                <div class="d-flex align-center justify-center fill-height" style="background: rgba(0,0,0,0.3);">
+                                  <v-icon color="white" size="24">mdi-eye</v-icon>
+                                </div>
+                              </v-img>
+                            </div>
+                            
                             <div class="text-subtitle-2 font-weight-bold mb-1 text-truncate">
                               {{ book.title }}
                             </div>
@@ -871,7 +1201,17 @@ onMounted(() => {
                   Students
                 </v-card-title>
                 <v-card-text class="pa-0">
-                  <v-table v-if="students.length > 0">
+                  <div class="px-6 pb-4">
+                    <v-text-field
+                      v-model="studentSearch"
+                      variant="outlined"
+                      density="comfortable"
+                      prepend-inner-icon="mdi-magnify"
+                      label="Search by LRN, Name, Year Level, or Section"
+                      hide-details
+                    />
+                  </div>
+                  <v-table v-if="filteredStudents.length > 0">
                     <thead>
                       <tr>
                         <th class="text-left">LRN</th>
@@ -882,7 +1222,7 @@ onMounted(() => {
                       </tr>
                     </thead>
                     <tbody>
-                      <tr v-for="s in students" :key="s.id">
+                      <tr v-for="s in filteredStudents" :key="s.id">
                         <td>{{ s.lrn }}</td>
                         <td>{{ s.name }}</td>
                         <td>{{ s.year_level }}</td>
@@ -898,8 +1238,8 @@ onMounted(() => {
                   </v-table>
                   <div v-else class="pa-8 text-center">
                     <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-off</v-icon>
-                    <p class="text-h6 text-grey-darken-1">No students added</p>
-                    <p class="text-body-2 text-grey">Use the form to add students</p>
+                    <p class="text-h6 text-grey-darken-1">No matching students</p>
+                    <p class="text-body-2 text-grey">Adjust your search or add students</p>
                   </div>
                 </v-card-text>
               </v-card>
@@ -912,6 +1252,20 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.recent-activity-card .text-green, .recent-activity-card .text-red {
+  font-size: 1.0625rem; /* ~17px */
+}
+.recent-activity-card .pa-4, .recent-activity-card .pa-6 {
+  font-size: 1rem; /* ~16px body text */
+}
+
+.visit-history-card .text-subtitle-1 {
+  font-size: 1.05rem;
+}
+.visit-history-card table, .visit-history-card th, .visit-history-card td {
+  font-size: 0.98rem; /* bump table text slightly */
+}
+
 .v-tabs .v-tab {
   text-transform: none;
   font-weight: 500;
