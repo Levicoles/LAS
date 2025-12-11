@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchBooks, createBook, deleteBookById, toggleAvailability, uploadBookPhoto, deleteBookPhoto, updateBookPhoto } from '@/services/books'
-import { fetchStudents, createStudent, deleteStudentById } from '@/services/students'
+import { fetchStudents, createStudent, deleteStudentById, updateStudentById } from '@/services/students'
 import { fetchRecentActivity, fetchReportsSummary, formatDuration } from '@/services/attendance'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -66,6 +66,17 @@ const newStudent = ref({
   year_level: '',
   section: '',
 })
+const editDialog = ref(false)
+const editStudentFormValid = ref(false)
+const editStudent = ref({
+  id: null,
+  lrn: '',
+  name: '',
+  year_level: '',
+  section: '',
+})
+const actionDrawer = ref(false)
+const drawerStudent = ref(null)
 
 // Delete student dialog state
 const studentDeleteDialog = ref(false)
@@ -110,9 +121,67 @@ const sanitizeLrn = () => {
     .slice(0, 4)
 }
 
+const sanitizeEditLrn = () => {
+  editStudent.value.lrn = String(editStudent.value.lrn || '')
+    .replace(/\D/g, '')
+    .slice(0, 4)
+}
+
 const requestDeleteStudent = (student) => {
   studentPendingDelete.value = student
   studentDeleteDialog.value = true
+}
+
+const requestEditStudent = (student) => {
+  if (!student) return
+  editStudent.value = { ...student }
+  editDialog.value = true
+}
+
+const openActionDrawer = (student) => {
+  drawerStudent.value = student
+  actionDrawer.value = true
+}
+
+const updateStudent = async () => {
+  try {
+    loading.value = true
+    const lrn = String(editStudent.value.lrn).trim()
+    const name = String(editStudent.value.name).trim()
+    const yearLevel = String(editStudent.value.year_level).trim()
+    const section = String(editStudent.value.section).trim()
+
+    if (!/^\d{4}$/.test(lrn) || !name || !yearLevel || !section) return
+
+    // Ensure LRN uniqueness except for the current student
+    const exists = students.value.some(
+      s => String(s.lrn) === lrn && s.id !== editStudent.value.id
+    )
+    if (exists) {
+      alert('A student with this LRN already exists.')
+      return
+    }
+
+    const updated = await updateStudentById(editStudent.value.id, {
+      lrn,
+      name,
+      year_level: yearLevel,
+      section,
+    })
+
+    const idx = students.value.findIndex(s => s.id === updated.id)
+    if (idx !== -1) {
+      students.value[idx] = updated
+    } else {
+      students.value.push(updated)
+    }
+
+    editDialog.value = false
+  } catch (error) {
+    console.error('Error updating student:', error)
+  } finally {
+    loading.value = false
+  }
 }
 
 const deleteStudent = async () => {
@@ -572,6 +641,33 @@ const visitRows = computed(() => {
 
 const visitRowsIn = computed(() => visitRows.value.filter(r => r.action === 'In'))
 const visitRowsOut = computed(() => visitRows.value.filter(r => r.action === 'Out'))
+
+// Pair login/logout into single rows
+const combinedVisitRows = computed(() => {
+  const map = {}
+  ;(recentActivity.value || []).forEach(a => {
+    const attendanceId = typeof a.id === 'string' && a.id.includes('-') ? a.id.split('-')[0] : ''
+    const key = attendanceId || `${a.user || 'unknown'}-${a.time || ''}`
+    const existingBooks = Array.isArray(booksByAttendance.value[attendanceId]) ? booksByAttendance.value[attendanceId] : []
+    const entry = map[key] || {
+      user: a.user || '',
+      loginTime: '',
+      logoutTime: '',
+      duration: '',
+      books: existingBooks,
+    }
+    const timeText = a.time ? new Date(a.time).toLocaleString() : ''
+    if (a.type === 'in') {
+      entry.loginTime = entry.loginTime || timeText
+    } else {
+      entry.logoutTime = entry.logoutTime || timeText
+      entry.duration = typeof a.duration === 'number' ? formatDuration(a.duration) : (a.duration || '')
+    }
+    if (!entry.books?.length) entry.books = existingBooks
+    map[key] = entry
+  })
+  return Object.values(map).filter(e => e.loginTime || e.logoutTime)
+})
 </script>
 
 <template>
@@ -736,57 +832,30 @@ const visitRowsOut = computed(() => visitRows.value.filter(r => r.action === 'Ou
                   Detailed Visit History
                 </v-card-title>
                 <v-card-text class="pa-0">
-                  <div v-if="!loading && (visitRowsIn.length || visitRowsOut.length)">
-                    <v-row>
-                      <v-col cols="12" md="6">
-                        <h4 class="text-subtitle-1 font-weight-bold pa-4 pb-2">Logins</h4>
-                        <v-table density="comfortable">
-                          <thead>
-                            <tr>
-                              <th class="text-left">User</th>
-                              <th class="text-left">Time</th>
-                              <th class="text-left">Duration</th>
-                              <th class="text-left">Books Read</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-for="(r, i) in visitRowsIn" :key="`in-${i}`">
-                              <td>{{ r.user }}</td>
-                              <td>{{ r.timeText }}</td>
-                              <td>{{ r.durationText }}</td>
-                              <td>
-                                <span v-if="r.books && r.books.length">{{ r.books.join(', ') }}</span>
-                                <span v-else class="text-grey">—</span>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </v-table>
-                      </v-col>
-                      <v-col cols="12" md="6">
-                        <h4 class="text-subtitle-1 font-weight-bold pa-4 pb-2">Logouts</h4>
-                        <v-table density="comfortable">
-                          <thead>
-                            <tr>
-                              <th class="text-left">User</th>
-                              <th class="text-left">Time</th>
-                              <th class="text-left">Duration</th>
-                              <th class="text-left">Books Read</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-for="(r, i) in visitRowsOut" :key="`out-${i}`">
-                              <td>{{ r.user }}</td>
-                              <td>{{ r.timeText }}</td>
-                              <td>{{ r.durationText }}</td>
-                              <td>
-                                <span v-if="r.books && r.books.length">{{ r.books.join(', ') }}</span>
-                                <span v-else class="text-grey">—</span>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </v-table>
-                      </v-col>
-                    </v-row>
+                  <div v-if="!loading && combinedVisitRows.length">
+                    <v-table density="comfortable">
+                      <thead>
+                        <tr>
+                          <th class="text-left">User</th>
+                          <th class="text-left">Login Time</th>
+                          <th class="text-left">Logout Time</th>
+                          <th class="text-left">Duration</th>
+                          <th class="text-left">Books Read</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(r, i) in combinedVisitRows" :key="`visit-${i}`">
+                          <td>{{ r.user }}</td>
+                          <td>{{ r.loginTime }}</td>
+                          <td>{{ r.logoutTime }}</td>
+                          <td>{{ r.duration || '—' }}</td>
+                          <td>
+                            <span v-if="r.books && r.books.length">{{ r.books.join(', ') }}</span>
+                            <span v-else class="text-grey">—</span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </v-table>
                   </div>
                   <div v-else-if="loading" class="pa-6 text-center">
                     <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
@@ -815,6 +884,121 @@ const visitRowsOut = computed(() => visitRows.value.filter(r => r.action === 'Ou
             </v-card-actions>
           </v-card>
         </v-dialog>
+
+        <!-- Edit Student Dialog -->
+        <v-dialog v-model="editDialog" max-width="500">
+          <v-card>
+            <v-card-title class="text-h6 font-weight-bold">Edit Student</v-card-title>
+            <v-card-text>
+              <v-form v-model="editStudentFormValid">
+                <v-text-field
+                  label="LRN"
+                  v-model="editStudent.lrn"
+                  @input="sanitizeEditLrn"
+                  :rules="[lrnFourDigits]"
+                  variant="outlined"
+                  density="comfortable"
+                  prepend-icon="mdi-card-account-details"
+                  maxlength="4"
+                  counter="4"
+                  required
+                />
+                <v-text-field
+                  label="Name"
+                  v-model="editStudent.name"
+                  :rules="[nameRequired]"
+                  variant="outlined"
+                  density="comfortable"
+                  prepend-icon="mdi-account"
+                  required
+                />
+                <v-text-field
+                  label="Year Level"
+                  v-model="editStudent.year_level"
+                  :rules="[yearLevelRequired]"
+                  variant="outlined"
+                  density="comfortable"
+                  prepend-icon="mdi-school"
+                  required
+                />
+                <v-text-field
+                  label="Section"
+                  v-model="editStudent.section"
+                  :rules="[sectionRequired]"
+                  variant="outlined"
+                  density="comfortable"
+                  prepend-icon="mdi-view-grid-outline"
+                  required
+                />
+              </v-form>
+            </v-card-text>
+            <v-card-actions>
+              <v-spacer></v-spacer>
+              <v-btn variant="text" @click="editDialog = false">Cancel</v-btn>
+              <v-btn color="primary" :disabled="!editStudentFormValid || loading" :loading="loading" @click="updateStudent" variant="elevated">
+                Save Changes
+              </v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
+
+        <!-- Actions Navigation Drawer -->
+        <v-navigation-drawer
+          v-model="actionDrawer"
+          location="right"
+          temporary
+          width="320"
+          elevation="4"
+        >
+          <v-sheet class="pa-4" height="100%">
+            <div class="d-flex align-center mb-4">
+              <v-icon color="primary" class="mr-2">mdi-account-cog</v-icon>
+              <h3 class="text-h6 font-weight-bold mb-0">Student Actions</h3>
+              <v-spacer></v-spacer>
+              <v-btn icon variant="text" @click="actionDrawer = false">
+                <v-icon>mdi-close</v-icon>
+              </v-btn>
+            </div>
+
+            <div v-if="drawerStudent">
+              <div class="mb-4">
+                <div class="text-subtitle-1 font-weight-bold">{{ drawerStudent.name }}</div>
+                <div class="text-body-2 text-grey-darken-1">LRN: {{ drawerStudent.lrn }}</div>
+                <div class="text-body-2 text-grey-darken-1">Year: {{ drawerStudent.year_level }}</div>
+                <div class="text-body-2 text-grey-darken-1">Section: {{ drawerStudent.section }}</div>
+              </div>
+
+              <v-divider class="mb-4"></v-divider>
+
+              <v-btn
+                color="primary"
+                block
+                class="mb-3"
+                :loading="loading"
+                @click="requestEditStudent(drawerStudent); actionDrawer = false"
+                variant="elevated"
+              >
+                <v-icon left size="18">mdi-pencil</v-icon>
+                Edit Student
+              </v-btn>
+
+              <v-btn
+                color="error"
+                block
+                :loading="loading"
+                @click="requestDeleteStudent(drawerStudent); actionDrawer = false"
+                variant="elevated"
+              >
+                <v-icon left size="18">mdi-delete</v-icon>
+                Delete Student
+              </v-btn>
+            </div>
+
+            <div v-else class="text-center text-grey">
+              No student selected.
+            </div>
+          </v-sheet>
+        </v-navigation-drawer>
 
         <!-- Manage Books Tab -->
         <div v-if="activeTab === 'books'">
@@ -1218,7 +1402,7 @@ const visitRowsOut = computed(() => visitRows.value.filter(r => r.action === 'Ou
                         <th class="text-left">Name</th>
                         <th class="text-left">Year Level</th>
                         <th class="text-left">Section</th>
-                        <th class="text-left" style="width: 120px;">Actions</th>
+                        <th class="text-left" style="width: 140px;">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1228,9 +1412,16 @@ const visitRowsOut = computed(() => visitRows.value.filter(r => r.action === 'Ou
                         <td>{{ s.year_level }}</td>
                         <td>{{ s.section }}</td>
                         <td>
-                          <v-btn color="error" size="small" :loading="loading" @click="requestDeleteStudent(s)" variant="elevated">
-                            <v-icon left size="16">mdi-delete</v-icon>
-                            Delete
+                          <v-btn 
+                            color="primary" 
+                            size="small" 
+                            block
+                            :loading="loading" 
+                            @click="openActionDrawer(s)" 
+                            variant="elevated"
+                          >
+                            <v-icon left size="16">mdi-menu</v-icon>
+                            Actions
                           </v-btn>
                         </td>
                       </tr>

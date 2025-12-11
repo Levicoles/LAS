@@ -178,6 +178,54 @@ const closeViewMoreDialog = () => {
 	selectedBook.value = null
 }
 
+// Pair login/logout sessions per student; open sessions leave logout blank
+const combinedSessions = computed(() => {
+	const sessions = []
+	const openByUser = {}
+	const chronological = [...(history.value || [])].sort((a, b) => (a.ts || 0) - (b.ts || 0))
+
+	chronological.forEach(item => {
+		const user = item.name || 'Unknown'
+		if (item.action === 'In') {
+			// start new open session
+			openByUser[user] = {
+				name: user,
+				loginTime: item.time || '',
+				logoutTime: '',
+				loginTs: item.ts || 0,
+				logoutTs: 0,
+			}
+		} else {
+			// Out: close existing open session if present
+			if (openByUser[user]) {
+				openByUser[user].logoutTime = item.time || ''
+				openByUser[user].logoutTs = item.ts || 0
+				sessions.push(openByUser[user])
+				delete openByUser[user]
+			} else {
+				// Out without an In (edge case)
+				sessions.push({
+					name: user,
+					loginTime: '',
+					logoutTime: item.time || '',
+					loginTs: 0,
+					logoutTs: item.ts || 0,
+				})
+			}
+		}
+	})
+
+	// Add any open sessions (no logout yet)
+	Object.values(openByUser).forEach(s => sessions.push(s))
+
+	// Sort newest first by logout or login timestamp
+	return sessions.sort((a, b) => {
+		const aTs = a.logoutTs || a.loginTs || 0
+		const bTs = b.logoutTs || b.loginTs || 0
+		return bTs - aTs
+	})
+})
+
 onMounted(async () => {
 	// Do not load all books initially; wait for a search
 	allBooks.value = []
@@ -203,7 +251,7 @@ onMounted(async () => {
           <v-container class="py-10">
 				<v-row>
 					<!-- Left: In/Out + Search + Books -->
-					<v-col cols="12" lg="8">
+					<v-col cols="12" lg="7">
 						<v-card elevation="6" class="pa-5 mb-6 rounded-xl">
 							<div class="d-flex align-center justify-space-between mb-3">
                     <h2 class="text-h5 font-weight-bold">Student In/Out</h2>
@@ -308,21 +356,26 @@ onMounted(async () => {
 					</v-col>
 
 					<!-- Right: In/Out History -->
-					<v-col cols="12" lg="4">
+					<v-col cols="12" lg="5">
 					<v-card elevation="6" class="pa-5 rounded-xl">
             <h2 class="text-h5 font-weight-bold mb-4">In/Out History</h2>
-						<div v-if="history.length" class="scroll-section">
-							<v-list lines="two">
-								<v-list-item v-for="item in history" :key="item.id" class="mb-2 rounded">
-									<v-list-item-title class="font-weight-medium">
-										{{ item.name }}
-									</v-list-item-title>
-									<v-list-item-subtitle>
-										<v-chip :color="item.action === 'In' ? 'green' : 'red'" class="mr-2 text-white" :prepend-icon="item.action==='In' ? 'mdi-login' : 'mdi-logout'">{{ item.action }}</v-chip>
-										<span class="text-grey-darken-1 text-body-2">{{ item.time }}</span>
-									</v-list-item-subtitle>
-								</v-list-item>
-							</v-list>
+						<div v-if="combinedSessions.length" class="scroll-section">
+							<v-table density="comfortable" class="history-table">
+								<thead>
+									<tr>
+										<th class="text-left">Student</th>
+										<th class="text-left">Login Time</th>
+										<th class="text-left">Logout Time</th>
+									</tr>
+								</thead>
+								<tbody>
+									<tr v-for="(row, idx) in combinedSessions" :key="idx">
+										<td>{{ row.name }}</td>
+										<td>{{ row.loginTime || '—' }}</td>
+										<td>{{ row.logoutTime || '—' }}</td>
+									</tr>
+								</tbody>
+							</v-table>
 						</div>
 							<div v-else class="text-center py-10">
 								<v-icon size="48" color="grey-lighten-1" class="mb-3">mdi-history</v-icon>
@@ -429,5 +482,36 @@ onMounted(async () => {
 .scroll-section {
   max-height: 420px;
   overflow-y: auto;
+}
+
+.history-table {
+  border-radius: 12px;
+  width: 100%;
+}
+
+.history-table thead {
+  background: linear-gradient(90deg, #0B4F18, #1f7a3d);
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.history-table tbody tr:nth-child(odd) {
+  background-color: #f8f9fa;
+}
+
+.history-table tbody tr:nth-child(even) {
+  background-color: #eef2f3;
+}
+
+.history-table td, .history-table th {
+  padding: 14px 12px;
+  font-size: 0.97rem;
+}
+
+.history-table tbody tr:hover {
+  background: #e0f2e9;
+  transition: background 0.2s ease;
 }
 </style>

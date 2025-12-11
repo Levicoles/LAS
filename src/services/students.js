@@ -43,4 +43,21 @@ export async function getStudentByLrn(lrn) {
   return data
 }
 
+export async function updateStudentById(id, student) {
+  const payload = {
+    lrn: String(student.lrn || '').trim(),
+    name: String(student.name || '').trim(),
+    year_level: String(student.year_level || '').trim(),
+    section: String(student.section || '').trim(),
+  }
+  const { data, error } = await supabase
+    .from('students')
+    .update(payload)
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data
+}
+
 
