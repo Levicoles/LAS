@@ -237,13 +237,26 @@ onMounted(async () => {
 	<v-app class="overflow-hidden">
         <v-app-bar elevation="0" class="modern-appbar" >
           <v-container class="py-4">
-            <div class="d-flex align-center">
-              <div class="flex-grow-1 text-center">
-                <h1 class="text-h5 text-white font-weight-bold">Lumbocan National High School Library System</h1>
-              </div>
-              <v-btn color="white" variant="text" prepend-icon="mdi-account-circle" size="large" @click="router.push('/login')">
-              </v-btn>
-            </div>
+            <v-row class="align-center">
+              <v-col cols="3" class="d-flex justify-start">
+                <v-img
+                  src="/LAS_LOGO.png"
+                  alt="Lumbocan National High School Logo"
+                  class="logo-img mr-4"
+                  contain
+                />
+              </v-col>
+              <v-col cols="6" class="text-center">
+                <h1 class="text-h5 text-white font-weight-bold">
+                  Lumbocan National High School Library System
+                </h1>
+              </v-col>
+              <v-col cols="3" class="d-flex justify-end">
+                <v-btn color="white" variant="text" size="large" @click="router.push('/login')">
+                  <v-icon size="34" icon="mdi-account-circle" />
+                </v-btn>
+              </v-col>
+            </v-row>
           </v-container>
         </v-app-bar>
 
@@ -513,5 +526,11 @@ onMounted(async () => {
 .history-table tbody tr:hover {
   background: #e0f2e9;
   transition: background 0.2s ease;
+}
+
+.logo-img {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
 }
 </style>
