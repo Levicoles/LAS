@@ -101,7 +101,7 @@ begin
 end;
 $$;
 
--- Returns true if there is at least one user with user_metadata.role = 'admin'
+-- Returns true if there is at least one user with user_metadata.role = 'admin' or 'super_admin'
 create or replace function public.has_admin()
 returns boolean
 language sql
@@ -111,24 +111,165 @@ as $$
   select exists (
     select 1
     from auth.users u
-    where coalesce(u.raw_user_meta_data->>'role', '') = 'admin'
+    where coalesce(u.raw_user_meta_data->>'role', '') in ('admin', 'super_admin')
   );
 $$;
 
--- Returns number of users with role = 'admin'
+-- Returns number of users with role = 'admin' or 'super_admin'
 create or replace function public.admin_count()
 returns bigint
 language sql
 security definer
 set search_path = public, auth
 as $$
-  select count(*)::bigint from auth.users u where coalesce(u.raw_user_meta_data->>'role','') = 'admin';
+  select count(*)::bigint from auth.users u where coalesce(u.raw_user_meta_data->>'role','') in ('admin', 'super_admin');
+$$;
+
+-- Returns true if there is at least one super_admin
+create or replace function public.has_super_admin()
+returns boolean
+language sql
+security definer
+set search_path = public, auth
+as $$
+  select exists (
+    select 1
+    from auth.users u
+    where coalesce(u.raw_user_meta_data->>'role', '') = 'super_admin'
+  );
+$$;
+
+-- Get all admin users (for super_admin management)
+create or replace function public.get_all_admins()
+returns table(
+  id uuid,
+  email text,
+  role text,
+  created_at timestamptz,
+  last_sign_in_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  return query
+  select 
+    u.id,
+    u.email::text,
+    coalesce(u.raw_user_meta_data->>'role', 'user')::text as role,
+    u.created_at,
+    u.last_sign_in_at
+  from auth.users u
+  where coalesce(u.raw_user_meta_data->>'role', '') in ('admin', 'super_admin')
+  order by u.created_at desc;
+end;
+$$;
+
+-- Update admin role (super_admin only)
+create or replace function public.update_admin_role(target_user_id uuid, new_role text)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  caller_role text;
+begin
+  -- Get caller's role
+  select coalesce(raw_user_meta_data->>'role', '') into caller_role
+  from auth.users where id = auth.uid();
+  
+  -- Only super_admin can update roles
+  if caller_role != 'super_admin' then
+    raise exception 'Unauthorized: Only super_admin can update roles';
+  end if;
+  
+  -- Validate new_role
+  if new_role not in ('admin', 'super_admin') then
+    raise exception 'Invalid role. Must be admin or super_admin';
+  end if;
+  
+  -- Update the user's role
+  update auth.users
+  set raw_user_meta_data = raw_user_meta_data || jsonb_build_object('role', new_role)
+  where id = target_user_id;
+  
+  return true;
+end;
+$$;
+
+-- Delete admin account (super_admin only, cannot delete self)
+create or replace function public.delete_admin_account(target_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  caller_role text;
+  caller_id uuid;
+begin
+  caller_id := auth.uid();
+  
+  -- Get caller's role
+  select coalesce(raw_user_meta_data->>'role', '') into caller_role
+  from auth.users where id = caller_id;
+  
+  -- Only super_admin can delete admins
+  if caller_role != 'super_admin' then
+    raise exception 'Unauthorized: Only super_admin can delete admin accounts';
+  end if;
+  
+  -- Cannot delete self
+  if target_user_id = caller_id then
+    raise exception 'Cannot delete your own account';
+  end if;
+  
+  -- Delete the user
+  delete from auth.users where id = target_user_id;
+  
+  return true;
+end;
+$$;
+
+-- Update admin email (super_admin only)
+create or replace function public.update_admin_email(target_user_id uuid, new_email text)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  caller_role text;
+begin
+  -- Get caller's role
+  select coalesce(raw_user_meta_data->>'role', '') into caller_role
+  from auth.users where id = auth.uid();
+  
+  -- Only super_admin can update admin info
+  if caller_role != 'super_admin' then
+    raise exception 'Unauthorized: Only super_admin can update admin accounts';
+  end if;
+  
+  -- Update the user's email
+  update auth.users
+  set email = new_email
+  where id = target_user_id;
+  
+  return true;
+end;
 $$;
 
 -- Allow anon/authenticated clients to execute these functions
 grant execute on function public.auth_user_count() to anon, authenticated;
 grant execute on function public.has_admin() to anon, authenticated;
 grant execute on function public.admin_count() to anon, authenticated;
+grant execute on function public.has_super_admin() to anon, authenticated;
+grant execute on function public.get_all_admins() to authenticated;
+grant execute on function public.update_admin_role(uuid, text) to authenticated;
+grant execute on function public.delete_admin_account(uuid) to authenticated;
+grant execute on function public.update_admin_email(uuid, text) to authenticated;
 
 -- Storage bucket for book photos
 -- Note: This needs to be run in Supabase dashboard or via CLI as it requires storage_admin role

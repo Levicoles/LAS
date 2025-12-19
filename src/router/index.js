@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '@/views/LoginView.vue'
 import RegisterAdminView from '@/views/RegisterAdminView.vue'
+import ResetPasswordView from '@/views/ResetPasswordView.vue'
 import DashboardAdmin from '@/components/DashboardAdmin.vue'
 import MainView from '@/components/MainView.vue'
 import { isAuthenticated, isCurrentUserAdmin, hasAdmin } from '@/services/auth'
@@ -22,6 +23,11 @@ const router = createRouter({
       path: '/register',
       name: 'register',
       component: RegisterAdminView,
+    },
+    {
+      path: '/reset-password',
+      name: 'reset-password',
+      component: ResetPasswordView,
     },
     {
       path: '/dashboard',
@@ -49,15 +55,12 @@ router.beforeEach(async (to) => {
   // Protect routes that require auth
   if (to.meta?.requiresAuth) {
     if (!authed) return { path: '/login', query: { redirect: to.fullPath } }
-    // Only admins can access dashboard
+    // Only admins (super_admin or admin role) can access dashboard
     if (to.path === '/dashboard') {
       const isAdmin = await isCurrentUserAdmin()
       if (!isAdmin) {
-        // If no admin exists yet, allow the first authenticated user through
-        const adminExistsNow = await hasAdmin()
-        if (adminExistsNow) {
-          return { path: '/' }
-        }
+        // Non-admin users (4th account onwards) get redirected to main view
+        return { path: '/' }
       }
     }
   }

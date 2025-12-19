@@ -254,7 +254,7 @@ onMounted(async () => {
               <v-col cols="3" class="d-flex justify-end">
                 <v-btn color="white" variant="text" size="large" @click="router.push('/login')">
                   <v-icon size="34" icon="mdi-account-circle" />
-                </v-btn>
+              </v-btn>
               </v-col>
             </v-row>
           </v-container>
@@ -329,7 +329,7 @@ onMounted(async () => {
 									/>
 								</v-col>
 								<v-col cols="12" md="4" class="d-flex">
-                <v-btn color="amber-darken-2" class="text-black" block :loading="isSearching" prepend-icon="mdi-magnify" size="large" @click="searchBooks">Search</v-btn>
+                <v-btn color="blue-darken-4" class="text-white" block :loading="isSearching" prepend-icon="mdi-magnify" size="large" @click="searchBooks">Search</v-btn>
 								</v-col>
 							</v-row>
 						</v-card>
@@ -479,12 +479,10 @@ onMounted(async () => {
 
 <style scoped>
 .modern-appbar {
-  background: #0B4F18;
+  background: linear-gradient(135deg, #1258a7 0%, #1B5E20 100%, #1B5E20 100%) !important;
 }
 .modern-bg {
-  background: radial-gradient(1200px 400px at 50% -10%, rgba(38, 166, 154, 0.15), transparent),
-              radial-gradient(900px 300px at 0% 0%, rgba(0, 188, 212, 0.12), transparent),
-              #D9D9D9;
+  background: linear-gradient(180deg, #0B4F18 0%, #003366 55%, #001b33 100%);
 }
 .book-card-elev:hover {
   transform: translateY(-2px);

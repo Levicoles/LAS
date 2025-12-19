@@ -21,15 +21,30 @@ export async function getAdminCount() {
   return Number(data || 0);
 }
 
-// Registers a user with role metadata: first becomes admin, others are users
+// Check if super_admin exists
+export async function hasSuperAdmin() {
+  const { data, error } = await supabase.rpc('has_super_admin');
+  if (error) return false;
+  return data === true;
+}
+
+// Registers a user with role metadata: first becomes super_admin, next 2 become admin, rest are users
 export async function registerWithEmail(email, password) {
   const normalizedEmail = String(email || '').trim();
   const normalizedPassword = String(password || '');
   if (!normalizedEmail || normalizedPassword.length < 8) {
     throw new Error('Email required and password must be at least 8 characters');
   }
+  
+  // First admin becomes super_admin, next 2 become admin, rest are regular users
   const adminCount = await getAdminCount();
-  const role = adminCount < 2 ? 'admin' : 'user';
+  let role = 'user';
+  if (adminCount === 0) {
+    role = 'super_admin';
+  } else if (adminCount < 3) {
+    role = 'admin';
+  }
+  
   const { data, error } = await supabase.auth.signUp({
     email: normalizedEmail,
     password: normalizedPassword,
@@ -77,6 +92,60 @@ export async function isAuthenticated() {
 export async function isCurrentUserAdmin() {
   const user = await getCurrentUser();
   const role = user?.user_metadata?.role;
-  return role === 'admin';
+  return role === 'admin' || role === 'super_admin';
+}
+
+export async function isCurrentUserSuperAdmin() {
+  const user = await getCurrentUser();
+  const role = user?.user_metadata?.role;
+  return role === 'super_admin';
+}
+
+export async function getCurrentUserRole() {
+  const user = await getCurrentUser();
+  return user?.user_metadata?.role || null;
+}
+
+// Admin Management Functions (super_admin only)
+
+export async function getAllAdmins() {
+  const { data, error } = await supabase.rpc('get_all_admins');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function updateAdminRole(userId, newRole) {
+  const { data, error } = await supabase.rpc('update_admin_role', {
+    target_user_id: userId,
+    new_role: newRole
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAdminAccount(userId) {
+  const { data, error } = await supabase.rpc('delete_admin_account', {
+    target_user_id: userId
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function updateAdminEmail(userId, newEmail) {
+  const { data, error } = await supabase.rpc('update_admin_email', {
+    target_user_id: userId,
+    new_email: newEmail
+  });
+  if (error) throw error;
+  return data;
+}
+
+// Reset admin password using Supabase admin API (sends password reset email)
+export async function resetAdminPassword(email) {
+  const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`
+  });
+  if (error) throw error;
+  return data;
 }
 

@@ -1,11 +1,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { registerWithEmail, hasAdmin, getCurrentSession, signOut } from '@/services/auth'
+import { useRouter, useRoute } from 'vue-router'
+import { supabase } from '@/services/supabaseClient'
 
 const router = useRouter()
+const route = useRoute()
 
-const email = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const showPassword = ref(false)
@@ -18,37 +18,42 @@ const passwordsMismatch = computed(() => confirmPassword.value.length > 0 && pas
 
 const canSubmit = computed(() => {
   return (
-    email.value.trim().length > 0 &&
     password.value.length >= 8 &&
     password.value === confirmPassword.value &&
     !submitting.value
   )
 })
 
-const goToLogin = () => router.push('/login')
-
-const handleRegister = async () => {
+const handleResetPassword = async () => {
   errorMessage.value = ''
   successMessage.value = ''
   submitting.value = true
+  
   try {
-    await registerWithEmail(email.value, password.value)
-    successMessage.value = 'Account created successfully. Redirecting to dashboard...'
-    const session = await getCurrentSession()
-    if (session) router.push('/dashboard')
+    const { error } = await supabase.auth.updateUser({
+      password: password.value
+    })
+    
+    if (error) throw error
+    
+    successMessage.value = 'Password updated successfully! Redirecting to login...'
+    setTimeout(() => {
+      router.push('/login')
+    }, 2000)
   } catch (e) {
-    errorMessage.value = e?.message || 'Failed to register admin'
+    errorMessage.value = e?.message || 'Failed to reset password'
   } finally {
     submitting.value = false
   }
 }
 
+const goToLogin = () => router.push('/login')
+
 onMounted(async () => {
-  // If a user is already logged in and they clicked "Create one",
-  // sign them out so they can register a new account instead of being redirected.
-  const session = await getCurrentSession()
-  if (session) {
-    await signOut()
+  // Check if user came from a valid reset link
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) {
+    errorMessage.value = 'Invalid or expired reset link. Please request a new password reset.'
   }
 })
 </script>
@@ -61,21 +66,18 @@ onMounted(async () => {
     >
       <v-card class="pa-6" width="440" elevation="6" rounded="xl">
         <v-card-title class="text-center text-h5 font-weight-bold text-blue-600">
-          Create Admin Account
+          <v-icon color="primary" size="32" class="mr-2">mdi-lock-reset</v-icon>
+          Reset Password
         </v-card-title>
         <v-card-text>
-          <v-text-field
-            v-model="email"
-            label="Email"
-            variant="outlined"
-            hide-details
-            class="mb-4"
-          />
+          <p class="text-body-2 text-grey-darken-1 mb-4 text-center">
+            Enter your new password below.
+          </p>
 
           <v-text-field
             v-model="password"
             :type="showPassword ? 'text' : 'password'"
-            label="Password (min 8 chars)"
+            label="New Password (min 8 chars)"
             variant="outlined"
             :append-inner-icon="showPassword ? 'mdi-eye-off' : 'mdi-eye'"
             @click:append-inner="showPassword = !showPassword"
@@ -86,7 +88,7 @@ onMounted(async () => {
           <v-text-field
             v-model="confirmPassword"
             :type="showPassword ? 'text' : 'password'"
-            label="Confirm Password"
+            label="Confirm New Password"
             variant="outlined"
             hide-details
             class="mb-2"
@@ -96,19 +98,18 @@ onMounted(async () => {
           <v-alert v-if="errorMessage" type="error" variant="tonal" border="start" class="mb-3">{{ errorMessage }}</v-alert>
           <v-alert v-if="successMessage" type="success" variant="tonal" border="start" class="mb-3">{{ successMessage }}</v-alert>
 
-          <v-btn :disabled="!canSubmit" block color="green" size="large" class="mt-2 text-white" @click="handleRegister">
-            {{ submitting ? 'Creating...' : 'Create Account' }}
+          <v-btn :disabled="!canSubmit" block color="green" size="large" class="mt-2 text-white" @click="handleResetPassword">
+            {{ submitting ? 'Updating...' : 'Update Password' }}
           </v-btn>
 
           <div class="text-caption mt-4 text-center">
-            Already have an account?
+            Remember your password?
             <v-btn variant="text" color="primary" @click="goToLogin">Go to Login</v-btn>
           </div>
         </v-card-text>
       </v-card>
     </div>
   </v-app>
-  
 </template>
 
 <style>
@@ -117,5 +118,4 @@ html, body, #app {
   margin: 0;
 }
 </style>
-
 

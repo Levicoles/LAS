@@ -26,8 +26,10 @@ const handleLogin = async () => {
 <template>
   <v-app>
     <!-- Background Gradient -->
-    <div class="d-flex align-center justify-center fill-height" 
-         style="background: linear-gradient(135deg, #dfe9f3, #e3d8f7);">
+    <div
+      class="d-flex align-center justify-center fill-height"
+      style="background: linear-gradient(180deg, #0B4F18 0%, #003366 55%, #001b33 100%);"
+    >
       
       <!-- Login Card -->
       <v-card class="pa-6" width="400" elevation="6" rounded="xl">

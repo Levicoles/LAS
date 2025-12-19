@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { fetchBooks, createBook, deleteBookById, toggleAvailability, uploadBookPhoto, deleteBookPhoto, updateBookPhoto } from '@/services/books'
 import { fetchStudents, createStudent, deleteStudentById, updateStudentById } from '@/services/students'
 import { fetchRecentActivity, fetchReportsSummary, formatDuration } from '@/services/attendance'
+import { getCurrentUserRole, getAllAdmins, updateAdminRole, deleteAdminAccount, updateAdminEmail, resetAdminPassword, getCurrentUser } from '@/services/auth'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
@@ -13,6 +14,29 @@ const router = useRouter()
 
 // Active tab state
 const activeTab = ref('reports')
+
+// Current user role
+const currentUserRole = ref(null)
+const currentUserId = ref(null)
+const isSuperAdmin = computed(() => currentUserRole.value === 'super_admin')
+
+// Admin Management state
+const admins = ref([])
+const adminLoading = ref(false)
+const adminMessage = ref({ type: '', text: '' })
+
+// Edit Admin Dialog
+const editAdminDialog = ref(false)
+const editingAdmin = ref(null)
+const editAdminForm = ref({ email: '', role: '' })
+
+// Delete Admin Dialog
+const deleteAdminDialog = ref(false)
+const adminToDelete = ref(null)
+
+// Reset Password Dialog
+const resetPasswordDialog = ref(false)
+const adminToResetPassword = ref(null)
 
 // Library Reports Data - populated from Supabase
 const totalVisits = ref(0)
@@ -589,11 +613,116 @@ const loadStudentsData = async () => {
   }
 }
 
+// Admin Management Functions
+const loadAdmins = async () => {
+  if (!isSuperAdmin.value) return
+  try {
+    adminLoading.value = true
+    admins.value = await getAllAdmins()
+  } catch (error) {
+    console.error('Error loading admins:', error)
+    adminMessage.value = { type: 'error', text: 'Failed to load admin accounts' }
+  } finally {
+    adminLoading.value = false
+  }
+}
+
+const openEditAdmin = (admin) => {
+  editingAdmin.value = admin
+  editAdminForm.value = { email: admin.email, role: admin.role }
+  editAdminDialog.value = true
+}
+
+const saveAdminChanges = async () => {
+  if (!editingAdmin.value) return
+  try {
+    adminLoading.value = true
+    adminMessage.value = { type: '', text: '' }
+    
+    // Update email if changed
+    if (editAdminForm.value.email !== editingAdmin.value.email) {
+      await updateAdminEmail(editingAdmin.value.id, editAdminForm.value.email)
+    }
+    
+    // Update role if changed
+    if (editAdminForm.value.role !== editingAdmin.value.role) {
+      await updateAdminRole(editingAdmin.value.id, editAdminForm.value.role)
+    }
+    
+    adminMessage.value = { type: 'success', text: 'Admin account updated successfully' }
+    editAdminDialog.value = false
+    await loadAdmins()
+  } catch (error) {
+    console.error('Error updating admin:', error)
+    adminMessage.value = { type: 'error', text: error.message || 'Failed to update admin account' }
+  } finally {
+    adminLoading.value = false
+  }
+}
+
+const confirmDeleteAdmin = (admin) => {
+  if (admin.id === currentUserId.value) {
+    adminMessage.value = { type: 'error', text: 'You cannot delete your own account' }
+    return
+  }
+  adminToDelete.value = admin
+  deleteAdminDialog.value = true
+}
+
+const deleteAdmin = async () => {
+  if (!adminToDelete.value) return
+  try {
+    adminLoading.value = true
+    adminMessage.value = { type: '', text: '' }
+    await deleteAdminAccount(adminToDelete.value.id)
+    adminMessage.value = { type: 'success', text: 'Admin account deleted successfully' }
+    deleteAdminDialog.value = false
+    adminToDelete.value = null
+    await loadAdmins()
+  } catch (error) {
+    console.error('Error deleting admin:', error)
+    adminMessage.value = { type: 'error', text: error.message || 'Failed to delete admin account' }
+  } finally {
+    adminLoading.value = false
+  }
+}
+
+const confirmResetPassword = (admin) => {
+  adminToResetPassword.value = admin
+  resetPasswordDialog.value = true
+}
+
+const sendPasswordReset = async () => {
+  if (!adminToResetPassword.value) return
+  try {
+    adminLoading.value = true
+    adminMessage.value = { type: '', text: '' }
+    await resetAdminPassword(adminToResetPassword.value.email)
+    adminMessage.value = { type: 'success', text: `Password reset email sent to ${adminToResetPassword.value.email}` }
+    resetPasswordDialog.value = false
+    adminToResetPassword.value = null
+  } catch (error) {
+    console.error('Error sending password reset:', error)
+    adminMessage.value = { type: 'error', text: error.message || 'Failed to send password reset email' }
+  } finally {
+    adminLoading.value = false
+  }
+}
+
 // Load data when component mounts
-onMounted(() => {
+onMounted(async () => {
+  // Get current user role
+  const user = await getCurrentUser()
+  currentUserId.value = user?.id
+  currentUserRole.value = user?.user_metadata?.role
+  
   loadLibraryData()
   loadBooksData()
   loadStudentsData()
+  
+  if (currentUserRole.value === 'super_admin') {
+    loadAdmins()
+  }
 })
 
 const filteredStudents = computed(() => {
@@ -673,7 +802,7 @@ const combinedVisitRows = computed(() => {
 <template>
   <v-app>
     <!-- Header -->
-    <v-app-bar color="primary" dark height="80" elevation="4">
+    <v-app-bar class="admin-header" dark height="80" elevation="4">
       <v-container fluid>
         <v-row align="center" no-gutters>
           <v-col cols="auto" class="mr-6">
@@ -702,9 +831,15 @@ const combinedVisitRows = computed(() => {
                   </template>
                   <v-list-item-title>Manage Students</v-list-item-title>
                 </v-list-item>
+                <v-list-item v-if="isSuperAdmin" :active="activeTab === 'admins'" @click="activeTab = 'admins'">
+                  <template #prepend>
+                    <v-icon color="primary" class="mr-2">mdi-shield-account</v-icon>
+                  </template>
+                  <v-list-item-title>Admin Management</v-list-item-title>
+                </v-list-item>
               </v-list>
             </v-menu>
-            <h1 class="text-h5 font-weight-bold d-inline">Library Admin Dashboard</h1>
+            <h1 class="text-h5 font-weight-bold d-inline text-white">Library Admin Dashboard</h1>
           </v-col>
           <v-col>
           </v-col>
@@ -724,7 +859,7 @@ const combinedVisitRows = computed(() => {
     </v-app-bar>
 
     <!-- Main Content -->
-    <v-main class="bg-grey-lighten-4">
+    <v-main class="admin-main-bg">
       <v-container fluid class="pa-4">
         
         <!-- Library Reports Tab -->
@@ -772,28 +907,28 @@ const combinedVisitRows = computed(() => {
           <!-- Metrics Cards -->
           <v-row class="mb-6">
             <v-col cols="12" md="4">
-              <v-card class="pa-4 text-center metric-card" elevation="3" color="blue-lighten-5">
-                <v-icon size="36" color="blue" class="mb-2">mdi-account-group</v-icon>
-                <div class="text-h3 font-weight-bold text-blue mb-1">{{ totalVisits }}</div>
-                <div class="text-subtitle-2 text-grey-darken-1">Total Visits</div>
+              <v-card class="pa-4 text-center metric-card metric-card-blue" elevation="3">
+                <v-icon size="36" color="#1565C0" class="mb-2">mdi-account-group</v-icon>
+                <div class="text-h3 font-weight-bold metric-value-blue mb-1">{{ totalVisits }}</div>
+                <div class="text-subtitle-2 text-grey-darken-2">Total Visits</div>
                 <v-divider class="my-2"></v-divider>
                 <div class="text-caption text-grey-darken-1">All time visits</div>
               </v-card>
             </v-col>
             <v-col cols="12" md="4">
-              <v-card class="pa-4 text-center metric-card" elevation="3" color="green-lighten-5">
-                <v-icon size="36" color="green" class="mb-2">mdi-account-check</v-icon>
-                <div class="text-h3 font-weight-bold text-green mb-1">{{ activeUsers }}</div>
-                <div class="text-subtitle-2 text-grey-darken-1">Active Users</div>
+              <v-card class="pa-4 text-center metric-card metric-card-green" elevation="3">
+                <v-icon size="36" color="#2E7D32" class="mb-2">mdi-account-check</v-icon>
+                <div class="text-h3 font-weight-bold metric-value-green mb-1">{{ activeUsers }}</div>
+                <div class="text-subtitle-2 text-grey-darken-2">Active Users</div>
                 <v-divider class="my-2"></v-divider>
                 <div class="text-caption text-grey-darken-1">Currently in library</div>
               </v-card>
             </v-col>
             <v-col cols="12" md="4">
-              <v-card class="pa-4 text-center metric-card" elevation="3" color="orange-lighten-5">
-                <v-icon size="36" color="orange" class="mb-2">mdi-clock-outline</v-icon>
-                <div class="text-h3 font-weight-bold text-orange mb-1">{{ avgStayTime }}</div>
-                <div class="text-subtitle-2 text-grey-darken-1">Avg Stay Time</div>
+              <v-card class="pa-4 text-center metric-card metric-card-teal" elevation="3">
+                <v-icon size="36" color="#00796B" class="mb-2">mdi-clock-outline</v-icon>
+                <div class="text-h3 font-weight-bold metric-value-teal mb-1">{{ avgStayTime }}</div>
+                <div class="text-subtitle-2 text-grey-darken-2">Avg Stay Time</div>
                 <v-divider class="my-2"></v-divider>
                 <div class="text-caption text-grey-darken-1">Average duration</div>
               </v-card>
@@ -1165,28 +1300,28 @@ const combinedVisitRows = computed(() => {
           <!-- Summary Cards -->
           <v-row class="mb-6">
             <v-col cols="12" md="4">
-              <v-card class="pa-4 text-center metric-card" elevation="3" color="blue-lighten-5">
-                <v-icon size="36" color="blue" class="mb-2">mdi-book-multiple</v-icon>
-                <div class="text-h3 font-weight-bold text-blue mb-1">{{ totalBooks }}</div>
-                <div class="text-subtitle-2 text-grey-darken-1">Total Books</div>
+              <v-card class="pa-4 text-center metric-card metric-card-blue" elevation="3">
+                <v-icon size="36" color="#1565C0" class="mb-2">mdi-book-multiple</v-icon>
+                <div class="text-h3 font-weight-bold metric-value-blue mb-1">{{ totalBooks }}</div>
+                <div class="text-subtitle-2 text-grey-darken-2">Total Books</div>
                 <v-divider class="my-2"></v-divider>
                 <div class="text-caption text-grey-darken-1">In collection</div>
               </v-card>
             </v-col>
             <v-col cols="12" md="4">
-              <v-card class="pa-4 text-center metric-card" elevation="3" color="green-lighten-5">
-                <v-icon size="36" color="green" class="mb-2">mdi-check-circle</v-icon>
-                <div class="text-h3 font-weight-bold text-green mb-1">{{ availableBooks }}</div>
-                <div class="text-subtitle-2 text-grey-darken-1">Available</div>
+              <v-card class="pa-4 text-center metric-card metric-card-green" elevation="3">
+                <v-icon size="36" color="#2E7D32" class="mb-2">mdi-check-circle</v-icon>
+                <div class="text-h3 font-weight-bold metric-value-green mb-1">{{ availableBooks }}</div>
+                <div class="text-subtitle-2 text-grey-darken-2">Available</div>
                 <v-divider class="my-2"></v-divider>
                 <div class="text-caption text-grey-darken-1">Ready to borrow</div>
               </v-card>
             </v-col>
             <v-col cols="12" md="4">
-              <v-card class="pa-4 text-center metric-card" elevation="3" color="orange-lighten-5">
-                <v-icon size="36" color="orange" class="mb-2">mdi-bookshelf</v-icon>
-                <div class="text-h3 font-weight-bold text-orange mb-1">{{ totalShelves }}</div>
-                <div class="text-subtitle-2 text-grey-darken-1">Shelves</div>
+              <v-card class="pa-4 text-center metric-card metric-card-teal" elevation="3">
+                <v-icon size="36" color="#00796B" class="mb-2">mdi-bookshelf</v-icon>
+                <div class="text-h3 font-weight-bold metric-value-teal mb-1">{{ totalShelves }}</div>
+                <div class="text-subtitle-2 text-grey-darken-2">Shelves</div>
                 <v-divider class="my-2"></v-divider>
                 <div class="text-caption text-grey-darken-1">Storage units</div>
               </v-card>
@@ -1437,12 +1572,254 @@ const combinedVisitRows = computed(() => {
             </v-col>
           </v-row>
         </div>
+
+        <!-- Admin Management Tab (Super Admin Only) -->
+        <div v-if="activeTab === 'admins' && isSuperAdmin">
+          <!-- Page Header -->
+          <v-row class="mb-4">
+            <v-col>
+              <v-card class="pa-4" elevation="2">
+                <h2 class="text-h4 font-weight-bold text-primary mb-2">
+                  <v-icon left color="primary">mdi-shield-account</v-icon>
+                  Admin Management
+                </h2>
+                <p class="text-body-1 text-grey-darken-1 mb-0">
+                  View and manage administrator accounts
+                </p>
+              </v-card>
+            </v-col>
+          </v-row>
+
+          <!-- Success/Error Messages -->
+          <v-row v-if="adminMessage.text" class="mb-4">
+            <v-col>
+              <v-alert 
+                :type="adminMessage.type" 
+                variant="tonal" 
+                closable 
+                @click:close="adminMessage = { type: '', text: '' }"
+              >
+                {{ adminMessage.text }}
+              </v-alert>
+            </v-col>
+          </v-row>
+
+          <!-- Admin List -->
+          <v-row>
+            <v-col>
+              <v-card elevation="3">
+                <v-card-title class="text-h6 font-weight-bold text-primary pa-6 pb-2">
+                  <v-icon left color="primary">mdi-account-multiple</v-icon>
+                  Admin Accounts
+                  <v-btn 
+                    icon 
+                    variant="text" 
+                    size="small" 
+                    class="ml-2" 
+                    @click="loadAdmins"
+                    :loading="adminLoading"
+                  >
+                    <v-icon>mdi-refresh</v-icon>
+                  </v-btn>
+                </v-card-title>
+                <v-card-text class="pa-0">
+                  <div v-if="adminLoading" class="pa-8 text-center">
+                    <v-progress-circular indeterminate color="primary" size="48"></v-progress-circular>
+                    <p class="mt-4 text-h6 text-grey-darken-1">Loading admins...</p>
+                  </div>
+                  <v-table v-else-if="admins.length > 0">
+                    <thead>
+                      <tr>
+                        <th class="text-left">Email</th>
+                        <th class="text-left">Role</th>
+                        <th class="text-left">Created</th>
+                        <th class="text-left">Last Sign In</th>
+                        <th class="text-left" style="width: 280px;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="admin in admins" :key="admin.id">
+                        <td>
+                          {{ admin.email }}
+                          <v-chip v-if="admin.id === currentUserId" size="x-small" color="info" class="ml-2">You</v-chip>
+                        </td>
+                        <td>
+                          <v-chip 
+                            :color="admin.role === 'super_admin' ? 'purple' : 'blue'" 
+                            size="small"
+                            variant="elevated"
+                          >
+                            <v-icon left size="14">{{ admin.role === 'super_admin' ? 'mdi-shield-crown' : 'mdi-shield-account' }}</v-icon>
+                            {{ admin.role === 'super_admin' ? 'Super Admin' : 'Admin' }}
+                          </v-chip>
+                        </td>
+                        <td>{{ admin.created_at ? new Date(admin.created_at).toLocaleDateString() : '—' }}</td>
+                        <td>{{ admin.last_sign_in_at ? new Date(admin.last_sign_in_at).toLocaleString() : 'Never' }}</td>
+                        <td>
+                          <v-btn 
+                            color="primary" 
+                            size="small" 
+                            class="mr-1"
+                            @click="openEditAdmin(admin)"
+                            variant="elevated"
+                          >
+                            <v-icon size="16">mdi-pencil</v-icon>
+                          </v-btn>
+                          <v-btn 
+                            color="warning" 
+                            size="small" 
+                            class="mr-1"
+                            @click="confirmResetPassword(admin)"
+                            variant="elevated"
+                          >
+                            <v-icon size="16">mdi-lock-reset</v-icon>
+                          </v-btn>
+                          <v-btn 
+                            color="error" 
+                            size="small"
+                            :disabled="admin.id === currentUserId"
+                            @click="confirmDeleteAdmin(admin)"
+                            variant="elevated"
+                          >
+                            <v-icon size="16">mdi-delete</v-icon>
+                          </v-btn>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </v-table>
+                  <div v-else class="pa-8 text-center">
+                    <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-off</v-icon>
+                    <p class="text-h6 text-grey-darken-1">No admin accounts found</p>
+                  </div>
+                </v-card-text>
+              </v-card>
+            </v-col>
+          </v-row>
+
+          <!-- Edit Admin Dialog -->
+          <v-dialog v-model="editAdminDialog" max-width="500">
+            <v-card>
+              <v-card-title class="text-h6 font-weight-bold">Edit Admin Account</v-card-title>
+              <v-card-text>
+                <v-text-field
+                  label="Email"
+                  v-model="editAdminForm.email"
+                  variant="outlined"
+                  density="comfortable"
+                  prepend-icon="mdi-email"
+                />
+                <v-select
+                  label="Role"
+                  v-model="editAdminForm.role"
+                  :items="[
+                    { title: 'Admin', value: 'admin' },
+                    { title: 'Super Admin', value: 'super_admin' }
+                  ]"
+                  variant="outlined"
+                  density="comfortable"
+                  prepend-icon="mdi-shield-account"
+                />
+              </v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn variant="text" @click="editAdminDialog = false">Cancel</v-btn>
+                <v-btn color="primary" :loading="adminLoading" @click="saveAdminChanges" variant="elevated">
+                  Save Changes
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+
+          <!-- Delete Admin Dialog -->
+          <v-dialog v-model="deleteAdminDialog" max-width="500">
+            <v-card>
+              <v-card-title class="text-h6 font-weight-bold text-error">
+                <v-icon color="error" class="mr-2">mdi-alert</v-icon>
+                Delete Admin Account
+              </v-card-title>
+              <v-card-text>
+                Are you sure you want to delete the admin account
+                <strong v-if="adminToDelete">"{{ adminToDelete.email }}"</strong>?
+                <br><br>
+                <strong class="text-error">This action cannot be undone.</strong>
+              </v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn variant="text" @click="deleteAdminDialog = false; adminToDelete = null">Cancel</v-btn>
+                <v-btn color="error" :loading="adminLoading" @click="deleteAdmin" variant="elevated">
+                  Delete Account
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+
+          <!-- Reset Password Dialog -->
+          <v-dialog v-model="resetPasswordDialog" max-width="500">
+            <v-card>
+              <v-card-title class="text-h6 font-weight-bold">
+                <v-icon color="warning" class="mr-2">mdi-lock-reset</v-icon>
+                Reset Password
+              </v-card-title>
+              <v-card-text>
+                Send a password reset email to
+                <strong v-if="adminToResetPassword">"{{ adminToResetPassword.email }}"</strong>?
+                <br><br>
+                The admin will receive an email with instructions to reset their password.
+              </v-card-text>
+              <v-card-actions>
+                <v-spacer></v-spacer>
+                <v-btn variant="text" @click="resetPasswordDialog = false; adminToResetPassword = null">Cancel</v-btn>
+                <v-btn color="warning" :loading="adminLoading" @click="sendPasswordReset" variant="elevated">
+                  Send Reset Email
+                </v-btn>
+              </v-card-actions>
+            </v-card>
+          </v-dialog>
+        </div>
       </v-container>
     </v-main>
   </v-app>
 </template>
 
 <style scoped>
+/* Professional Green, Blue & White Color Scheme */
+.admin-main-bg {
+  background: linear-gradient(135deg, #f8fbff 0%, #f0f7f4 50%, #f5f9fc 100%) !important;
+  min-height: 100vh;
+}
+
+.admin-header {
+  background: linear-gradient(135deg, #1565C0 0%, #0D47A1 50%, #1B5E20 100%) !important;
+}
+
+/* Metric Cards with Clean Colors */
+.metric-card-blue {
+  background: linear-gradient(145deg, #ffffff 0%, #E3F2FD 100%) !important;
+  border-left: 4px solid #1565C0 !important;
+}
+
+.metric-card-green {
+  background: linear-gradient(145deg, #ffffff 0%, #E8F5E9 100%) !important;
+  border-left: 4px solid #2E7D32 !important;
+}
+
+.metric-card-teal {
+  background: linear-gradient(145deg, #ffffff 0%, #E0F2F1 100%) !important;
+  border-left: 4px solid #00796B !important;
+}
+
+.metric-value-blue {
+  color: #1565C0 !important;
+}
+
+.metric-value-green {
+  color: #2E7D32 !important;
+}
+
+.metric-value-teal {
+  color: #00796B !important;
+}
+
 .recent-activity-card .text-green, .recent-activity-card .text-red {
   font-size: 1.0625rem; /* ~17px */
 }
@@ -1466,11 +1843,12 @@ const combinedVisitRows = computed(() => {
 .v-card {
   border-radius: 12px;
   transition: all 0.3s ease;
+  background: #ffffff;
 }
 
 .v-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(0,0,0,0.15) !important;
+  box-shadow: 0 8px 25px rgba(21, 101, 192, 0.12) !important;
 }
 
 .v-btn {
@@ -1484,7 +1862,7 @@ const combinedVisitRows = computed(() => {
 }
 
 .v-list-item:hover {
-  background-color: rgba(0,0,0,0.04) !important;
+  background-color: rgba(21, 101, 192, 0.06) !important;
 }
 
 .metric-card {
@@ -1493,7 +1871,7 @@ const combinedVisitRows = computed(() => {
 
 .metric-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 12px 30px rgba(0,0,0,0.15) !important;
+  box-shadow: 0 12px 30px rgba(21, 101, 192, 0.15) !important;
 }
 
 .book-card {
@@ -1502,36 +1880,38 @@ const combinedVisitRows = computed(() => {
 
 .book-card:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 15px rgba(0,0,0,0.1) !important;
+  box-shadow: 0 4px 15px rgba(46, 125, 50, 0.12) !important;
 }
 
 .shelf-card {
   min-height: 200px;
   transition: all 0.3s ease;
+  background: linear-gradient(145deg, #ffffff 0%, #f8fbff 100%) !important;
+  border-top: 3px solid #1565C0 !important;
 }
 
 .shelf-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0,0,0,0.1) !important;
+  box-shadow: 0 6px 20px rgba(21, 101, 192, 0.12) !important;
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar with blue-green theme */
 ::-webkit-scrollbar {
   width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: #f0f7f4;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
+  background: linear-gradient(180deg, #1565C0 0%, #2E7D32 100%);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
+  background: linear-gradient(180deg, #0D47A1 0%, #1B5E20 100%);
 }
 
 /* Animation for loading states */
@@ -1543,6 +1923,13 @@ const combinedVisitRows = computed(() => {
 
 .loading-pulse {
   animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Table header styling */
+.v-table thead th {
+  background: linear-gradient(135deg, #E3F2FD 0%, #E8F5E9 100%) !important;
+  color: #1565C0 !important;
+  font-weight: 600 !important;
 }
 
 /* Responsive adjustments */
