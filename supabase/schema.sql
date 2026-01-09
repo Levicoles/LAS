@@ -279,7 +279,7 @@ grant execute on function public.update_admin_email(uuid, text) to authenticated
 -- File size limit: 5242880 (5MB)
 -- 
 -- Run this SQL in Supabase SQL editor or via CLI:
-/*
+
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
   'book-photos',
@@ -302,4 +302,3 @@ WITH CHECK (bucket_id = 'book-photos' AND auth.role() = 'authenticated');
 CREATE POLICY "Authenticated users can delete"
 ON storage.objects FOR DELETE
 USING (bucket_id = 'book-photos' AND auth.role() = 'authenticated');
-*/
